@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>K-MEDIhub 크리스마스 초대장</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#e9eef6;font-family:system-ui,'Noto Sans KR',sans-serif;touch-action:none}
+  canvas{display:block}
+  body.pointer canvas{cursor:pointer}
+  #hint{position:fixed;top:14px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:999px;background:rgba(255,255,255,.95);color:#12357f;font-weight:700;font-size:14px;box-shadow:0 4px 16px rgba(18,53,127,.25);pointer-events:none;white-space:nowrap}
+  #count{position:fixed;top:60px;left:50%;transform:translateX(-50%);color:#12357f;font-size:12px;opacity:.85;pointer-events:none}
+  #pad{position:fixed;right:max(14px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px}
+  .pbtn{width:92px;height:92px;border-radius:50%;border:0;color:#fff;font-size:15px;font-weight:800;line-height:1.3;box-shadow:0 6px 18px rgba(0,0,0,.28);opacity:.92;user-select:none;-webkit-user-select:none;touch-action:none}
+  .pbtn span{display:block;font-size:13px}
+  #fwd{background:#2e8b3d}
+  #back{background:#3a5bb5}
+  .pbtn.on{transform:scale(.94);filter:brightness(.85)}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hint">🎄 트리를 눌러 이벤트에 참여하세요</div>
+<div id="count"></div>
+<div id="pad">
+  <button id="fwd" class="pbtn"><span>▲</span>앞으로<br>걷기</button>
+  <button id="back" class="pbtn"><span>▼</span>뒤로<br>걷기</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================= Firebase 설정 (웹 앱 등록 시 발급된 값) ================= */
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBJYUXScROF99dbKJjs7tOXc0qDZwtf7YI',
+  authDomain: 'k-medihub-christmas-events.firebaseapp.com',
+  databaseURL: 'https://k-medihub-christmas-events-default-rtdb.asia-southeast1.firebasedatabase.app',
+  projectId: 'k-medihub-christmas-events',
+  storageBucket: 'k-medihub-christmas-events.firebasestorage.app',
+  messagingSenderId: '480318313478',
+  appId: '1:480318313478:web:599e04ed02aa7048929f87'
+};
+
+/* ================= 설정 (STOP_Z, START_Z, LANES는 Realtime Database 보안 규칙의 범위와 맞춰 두었음) ================= */
+const CONFIG = {
+  LINK: 'https://forms.gle/iHEkeSvsKkpSboum8',
+  QR: 'assets/qr.png',         // TV에 표시할 QR 이미지 (assets 폴더에 qr.png로 저장)
+  TREE_H: 4.8,                 // 연출용 높이(m). 사진 기준 추정은 약 4m
+  EXPOSURE: 1.15,              // 전체 밝기 (1.0 어두움 ~ 1.3 밝음)
+  START_Z: 8, STOP_Z: 3.6, SPEED: 1.5,
+  LANES: 9, LANE_GAP: 0.7
+};
+const H = CONFIG.TREE_H, CEIL = 5.8, BACK = -4.5, FRONT = 15, LW = 9; // 로비: 가로 18m, 세로 19.5m
+const BASE_H = 4.0;          // 트리 모델링 기준 높이 (실제 크기는 H/BASE_H 배율)
+const MID_Z = (BACK + FRONT) / 2, DEPTH = FRONT - BACK;
+
+/* ================= 기본 장면 ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = CONFIG.EXPOSURE;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9eef6);
+scene.fog = new THREE.Fog(0xe9eef6, 26, 60);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture; // 밝은 실내 반사광
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 80);
+
+const mat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, ...o });
+const box = (w, h, d, m, x, y, z, parent = scene) => {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  b.position.set(x, y, z); parent.add(b); return b;
+};
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xe3e9f4, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, .8); sun.position.set(4, 8, 10); scene.add(sun);
+const warm = new THREE.PointLight(0xffd9a0, 22, 14, 2);
+warm.position.set(0, 2.2, 2.4); scene.add(warm);
+
+/* ================= 텍스처 도우미 ================= */
+function glowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(.25, 'rgba(255,255,255,.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const GLOW = glowTexture();
+function tileTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const x = c.getContext('2d'); x.fillStyle = '#f1f3f7'; x.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 1200; i++) { const v = 228 + Math.random() * 24 | 0; x.fillStyle = `rgb(${v},${v},${v + 3})`; x.fillRect(Math.random() * 256, Math.random() * 256, 2, 2); }
+  x.strokeStyle = 'rgba(150,158,172,.35)'; x.lineWidth = 2; x.strokeRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(30, 32);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t;
+}
+
+/* ================= 로비 (밝고 단순하게) ================= */
+const under = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshBasicMaterial({ color: 0xeef1f6 }));
+under.rotation.x = -Math.PI / 2; under.position.y = -H * 1.4; scene.add(under);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(LW * 2, DEPTH),
+  new THREE.MeshStandardMaterial({ map: tileTexture(), roughness: .12, metalness: .05, transparent: true, opacity: .8 }));
+floor.rotation.x = -Math.PI / 2; floor.position.set(0, 0, MID_Z); floor.renderOrder = 2; scene.add(floor);
+
+// 트리 아래 따뜻한 빛 웅덩이
+const pool = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), new THREE.MeshBasicMaterial({
+  map: GLOW, color: 0xffd9a0, transparent: true, opacity: .55, blending: THREE.AdditiveBlending, depthWrite: false }));
+pool.rotation.x = -Math.PI / 2; pool.position.set(0, .02, 0); pool.renderOrder = 3; scene.add(pool);
+
+// 천장 + 조명 라인 + 바닥에 비친 빛 줄무늬
+const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(LW * 2, DEPTH), mat(0xffffff, { roughness: .9 }));
+ceiling.rotation.x = Math.PI / 2; ceiling.position.set(0, CEIL, MID_Z); scene.add(ceiling);
+const stripMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const streakMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .14, blending: THREE.AdditiveBlending, depthWrite: false });
+[-7, -3.5, 0, 3.5, 7].forEach((x) => {
+  box(.28, .06, DEPTH - .5, stripMat, x, CEIL - .03, MID_Z);
+  const s = new THREE.Mesh(new THREE.PlaneGeometry(.45, DEPTH - .5), streakMat);
+  s.rotation.x = -Math.PI / 2; s.position.set(x, .015, MID_Z); s.renderOrder = 3; scene.add(s);
+});
+const dlMat = new THREE.MeshBasicMaterial({ color: 0xfff6e0 });
+for (let xi = -2; xi <= 2; xi++) for (let zi = 0; zi < 5; zi++) {
+  const d = new THREE.Mesh(new THREE.CircleGeometry(.12, 16), dlMat);
+  d.rotation.x = Math.PI / 2; d.position.set(xi * 3.5 + 1.75, CEIL - .01, BACK + 2 + zi * 4); scene.add(d);
+}
+
+// 벽
+const wallMat = mat(0xf4f6f9, { roughness: .8 });
+box(.3, CEIL, DEPTH, wallMat, -LW - .15, CEIL / 2, MID_Z);
+box(.3, CEIL, DEPTH, wallMat, LW + .15, CEIL / 2, MID_Z);
+box(LW * 2 + .6, CEIL, .3, wallMat, 0, CEIL / 2, FRONT + .15);
+box(LW * 2 + .6, CEIL, .2, mat(0xdbe6f3, { roughness: .2, metalness: .15 }), 0, CEIL / 2, BACK - .1); // 밝은 유리벽 느낌
+
+// 기둥 (곡선 계단과 겹치는 왼쪽 기둥은 제외)
+const colMat = mat(0xf0f2f5, { roughness: .35 });
+[-3.4, 1.7, 7.6].forEach((x) => {
+  const c = new THREE.Mesh(new THREE.CylinderGeometry(.35, .35, CEIL, 24), colMat);
+  c.position.set(x, CEIL / 2, BACK + .6); scene.add(c);
+});
+
+// 입구 유리문
+const steel = mat(0xd5dae1, { metalness: .4, roughness: .3 });
+box(5.6, .45, .6, steel, 4.6, 3.15, BACK + .35);
+[1.8, 3.2, 4.6, 6.0, 7.4].forEach((x) => box(.08, 2.9, .08, steel, x, 1.45, BACK + .3));
+box(5.6, 2.9, .02, mat(0xbfe0e8, { transparent: true, opacity: .25, metalness: .2, roughness: .1 }), 4.6, 1.45, BACK + .3);
+const exitMat = new THREE.MeshBasicMaterial({ color: 0x19c26a });
+box(.4, .4, .05, exitMat, 2.05, 3.15, BACK + .68); box(.4, .4, .05, exitMat, 7.15, 3.15, BACK + .68);
+
+/* ---- 2층으로 올라가는 곡선 계단 (왼쪽 뒤) ---- */
+{
+  const ST = 18, RISE = 1 / 6, CX = -8.0, CZ = 0, RI = 2.6, RO = 4.2;
+  const PHI = 80 * Math.PI / 180, DPHI = PHI / ST, TOP = ST * RISE; // 2층 높이 3.0m
+  const pt = (r, phi) => [CX + r * Math.cos(phi), CZ - r * Math.sin(phi)]; // phi가 커질수록 안쪽(뒤)·왼쪽으로 휨
+  const wood = mat(0xb39a82, { roughness: .5 });                           // 기존 계단 색 유지
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0xd7ecf0, transparent: true, opacity: .3, side: THREE.DoubleSide, roughness: .1 });
+
+  // 부채꼴 단: 단마다 높이가 올라감
+  for (let i = 0; i < ST; i++) {
+    const sh = new THREE.Shape();
+    sh.absarc(0, 0, RO, i * DPHI, (i + 1) * DPHI, false);
+    sh.absarc(0, 0, RI, (i + 1) * DPHI, i * DPHI, true);
+    sh.closePath();
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: RISE * (i + 1), bevelEnabled: false, curveSegments: 4 });
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, wood); m.position.set(CX, 0, CZ); scene.add(m);
+  }
+
+  // 곡선 난간: 스테인리스 손잡이 + 유리 (바깥쪽·안쪽)
+  [RO - .05, RI + .05].forEach((r) => {
+    const pts = [], pos = [], idx = [];
+    for (let k = 0; k <= ST; k++) {
+      const [x, z] = pt(r, k * DPHI);
+      pts.push(new THREE.Vector3(x, k * RISE + 1.0, z));
+      pos.push(x, k * RISE + .12, z, x, k * RISE + 1.0, z);
+      if (k) { const a = (k - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    }
+    scene.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), ST * 3, .035, 8), steel));
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); gg.setIndex(idx); gg.computeVertexNormals();
+    scene.add(new THREE.Mesh(gg, glassMat));
+  });
+
+  // 2층 발코니(랜딩): 윗면은 계단과 같은 색, 나머지는 흰색
+  const LX0 = -LW, LX1 = -7.25, LZ0 = BACK, LZ1 = -2.4, lcx = (LX0 + LX1) / 2;
+  box(LX1 - LX0, .3, LZ1 - LZ0, [wallMat, wallMat, wood, wallMat, wallMat, wallMat], lcx, TOP - .15, (LZ0 + LZ1) / 2);
+  box(LX1 - LX0, .9, .02, glassMat, lcx, TOP + .45, LZ1 - .02);
+  box(LX1 - LX0, .05, .05, steel, lcx, TOP + .95, LZ1 - .02);
+}
+
+// TV: QR 이미지 표시 (스캔하기 쉽도록 보간을 끄고 크게 표시)
+const tvCanvas = document.createElement('canvas'); tvCanvas.width = 1280; tvCanvas.height = 720;
+const tctx = tvCanvas.getContext('2d'), tvTex = new THREE.CanvasTexture(tvCanvas); tvTex.colorSpace = THREE.SRGBColorSpace;
+tvTex.minFilter = THREE.LinearFilter; tvTex.generateMipmaps = false; // 밉맵 흐림 방지
+tvTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+function drawTV(img) {
+  tctx.fillStyle = '#fff'; tctx.fillRect(0, 0, 1280, 720);
+  if (img) {
+    // 가능하면 정수 배율로 확대해 QR 칸 크기가 균일하게 보이도록 함 (화면 높이 720px 안에서)
+    const s = Math.floor(716 / img.height);
+    const h = s >= 1 ? img.height * s : 700, w = h * img.width / img.height;
+    tctx.imageSmoothingEnabled = false;
+    tctx.drawImage(img, Math.round((1280 - w) / 2), Math.round((720 - h) / 2), w, h);
+  }
+  tvTex.needsUpdate = true;
+}
+drawTV(null);
+const qr = new Image(); qr.onload = () => drawTV(qr); qr.onerror = () => console.warn('QR 이미지를 찾을 수 없습니다: ' + CONFIG.QR); qr.src = CONFIG.QR;
+box(2.36, 1.34, .08, mat(0x1b1b1b, { roughness: .4 }), 4.2, 4.4, BACK + .1);
+const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 1.294), new THREE.MeshBasicMaterial({ map: tvTex, toneMapped: false }));
+screen.position.set(4.2, 4.4, BACK + .15); scene.add(screen);
+
+/* ================= 트리 (기본 높이 4m로 제작 후 배율 적용) ================= */
+let twinkle = [], starMesh = null, starHalo = null;
+function buildTree() {
+  const g = new THREE.Group();
+  const Y0 = .25, Y1 = BASE_H - .45, RB = 1.2;   // Y1 = 본체 끝점 (별은 그 위에 올림)
+  const L = Y1 - Y0;
+  const surf = (s, th, k = 1) => { const r = RB * (1 - s) * k; return new THREE.Vector3(Math.cos(th) * r, Y0 + s * L, Math.sin(th) * r); };
+
+  // 본체: 겹친 원뿔 8단
+  const n = 8;
+  for (let i = 0; i < n; i++) {
+    const s0 = (i / n) * .92, yb = Y0 + s0 * L, rb = RB * (1 - s0) * 1.1, h = Math.min(L / n * 2, Y1 - yb);
+    const m = new THREE.Mesh(new THREE.ConeGeometry(rb, h, 28),
+      mat(new THREE.Color().setHSL(.36, .55, .2 + .012 * i), { roughness: .95, flatShading: true }));
+    m.position.y = yb + h / 2; g.add(m);
+  }
+
+  // 웜화이트 전구: 두 그룹이 번갈아 반짝임
+  const N = 3200, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), tmp = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const s = 1 - Math.sqrt(1 - Math.random() * .97), p = surf(s, Math.random() * Math.PI * 2, 1.05 + Math.random() * .06);
+    pos.set([p.x, p.y, p.z], i * 3); tmp.setHSL(.11 + Math.random() * .03, .9, .72); col.set([tmp.r, tmp.g, tmp.b], i * 3);
+  }
+  const mkPts = (a, b) => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos.slice(a * 3, b * 3), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col.slice(a * 3, b * 3), 3));
+    const m = new THREE.PointsMaterial({ map: GLOW, size: .13, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const p = new THREE.Points(geo, m); p.renderOrder = 3; g.add(p); return m;
+  };
+  twinkle = [mkPts(0, N / 2), mkPts(N / 2, N)];
+
+  // 오너먼트: 빨강 / 금 / 흰색
+  const orn = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 12), mat(0xffffff, { roughness: .25, metalness: .25 }), 120);
+  const d = new THREE.Object3D(), palette = [0xc1121f, 0xc1121f, 0xc1121f, 0xd9b26f, 0xd9b26f, 0xf3efe6];
+  for (let i = 0; i < 120; i++) {
+    const s = .05 + Math.random() * .85;
+    d.position.copy(surf(s, Math.random() * Math.PI * 2, 1.04));
+    d.scale.setScalar((.07 + Math.random() * .06) * (1 - s * .4)); d.updateMatrix();
+    orn.setMatrixAt(i, d.matrix); orn.setColorAt(i, new THREE.Color(palette[Math.random() * 6 | 0]));
+  }
+  g.add(orn);
+
+  // 별: 발광을 낮춰 입체 윤곽이 보이게, 후광은 별 뒤쪽에 옅게
+  const sh = new THREE.Shape();
+  for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? .14 : .32; (i ? sh.lineTo : sh.moveTo).call(sh, Math.cos(a) * r, Math.sin(a) * r); }
+  sh.closePath();
+  const sg = new THREE.ExtrudeGeometry(sh, { depth: .1, bevelEnabled: true, bevelThickness: .03, bevelSize: .02, bevelSegments: 2 });
+  sg.translate(0, 0, -.05);
+  starMesh = new THREE.Mesh(sg, mat(0xf2dca0, { metalness: .45, roughness: .35, emissive: 0xffe2a0, emissiveIntensity: .18, envMapIntensity: .7 }));
+  starMesh.position.set(0, Y1 + .2, 0); g.add(starMesh);
+  starHalo = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: 0xffe3a0, transparent: true, opacity: .28, depthWrite: false }));
+  starHalo.scale.set(1.15, 1.15, 1); starHalo.position.set(0, Y1 + .2, -.2); g.add(starHalo);
+
+  // 하단 장식
+  const white = mat(0xffffff, { roughness: .7 }), red = mat(0xc8102e, { roughness: .6 }), gold = mat(0xd4af37, { metalness: .35, roughness: .35 });
+  const wood = mat(0x6b4a2f, { roughness: .9 }), leaf = mat(0x2d6a3a, { roughness: .9 });
+  const gar = new THREE.Mesh(new THREE.TorusGeometry(1.5, .13, 8, 48), leaf); gar.rotation.x = Math.PI / 2; gar.position.y = .1; g.add(gar);
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4, c = new THREE.Mesh(new THREE.CylinderGeometry(.12, .12, .3, 12), wood);
+    c.position.set(Math.cos(a) * 1.45, .15, Math.sin(a) * 1.45); c.rotation.set(Math.random(), Math.random() * 3, Math.random()); g.add(c);
+  }
+  for (let i = 0; i < 16; i++) { // 포인세티아 (오른쪽 앞)
+    const a = .2 + Math.random() * 1.0, r = 1.3 + Math.random() * .25;
+    const f = new THREE.Mesh(new THREE.SphereGeometry(.2, 12, 8), red); f.scale.set(1, .35, 1);
+    f.position.set(Math.cos(a) * r, .2 + Math.random() * .08, Math.sin(a) * r); f.rotation.set(Math.random() * .4, Math.random() * 3, Math.random() * .4); g.add(f);
+  }
+  const snow = (x, z) => { // 눈사람 (왼쪽 앞)
+    const s = new THREE.Group(), part = (geo, m, y) => { const o = new THREE.Mesh(geo, m); o.position.y = y; s.add(o); return o; };
+    part(new THREE.SphereGeometry(.3, 20, 16), white, .3); part(new THREE.SphereGeometry(.21, 20, 16), white, .74);
+    part(new THREE.CylinderGeometry(.15, .17, .16, 16), red, .98); part(new THREE.SphereGeometry(.05, 8, 8), white, 1.08);
+    const sc = part(new THREE.TorusGeometry(.17, .05, 8, 20), red, .58); sc.rotation.x = Math.PI / 2;
+    const nose = part(new THREE.ConeGeometry(.03, .12, 8), mat(0xff7a1a), .74); nose.rotation.x = Math.PI / 2; nose.position.z = .24;
+    s.position.set(x, 0, z); g.add(s);
+  };
+  snow(-1.6, 1.2); snow(-.85, 1.55);
+  const gift1 = new THREE.Mesh(new THREE.BoxGeometry(.3, .26, .3), gold); gift1.position.set(-1.85, .13, .45); gift1.rotation.y = .4; g.add(gift1);
+  const gift2 = new THREE.Mesh(new THREE.BoxGeometry(.22, .2, .22), gold); gift2.position.set(-1.95, .1, .1); g.add(gift2);
+  const candle = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, .26, 12), mat(0xfff4dc, { emissive: 0xffe2a8, emissiveIntensity: .6 })); candle.position.set(-.1, .13, 1.75); g.add(candle);
+  const flame = new THREE.Mesh(new THREE.SphereGeometry(.035, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffd37a })); flame.position.set(-.1, .29, 1.75); g.add(flame);
+  return g;
+}
+const tree = buildTree(); tree.scale.setScalar(H / BASE_H); scene.add(tree);
+const mirror = tree.clone(); mirror.scale.y *= -1; // 바닥 반사 흉내
+mirror.traverse((o) => { o.renderOrder = 1; }); scene.add(mirror);
+
+// 클릭 영역: 트리·하단 장식·별까지 덮는 눈에 안 보이는 원뿔
+const hit = new THREE.Mesh(new THREE.ConeGeometry(2.2, H + .7, 16), new THREE.MeshBasicMaterial({ visible: false }));
+hit.position.y = (H + .7) / 2; scene.add(hit);
+
+/* ================= 반딧불 (개별로 떠다니며 깜빡이는 따뜻한 불빛) ================= */
+const FF = 180;
+const ffPos = new Float32Array(FF * 3), ffPh = new Float32Array(FF);
+for (let i = 0; i < FF; i++) {
+  ffPos.set([(Math.random() - .5) * 14, .6 + Math.random() * 4, BACK + 1 + Math.random() * (DEPTH - 2)], i * 3);
+  ffPh[i] = Math.random() * 100;
+}
+const ffGeo = new THREE.BufferGeometry();
+ffGeo.setAttribute('position', new THREE.BufferAttribute(ffPos, 3));
+ffGeo.setAttribute('aPh', new THREE.BufferAttribute(ffPh, 1));
+const ffMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  uniforms: { uTime: { value: 0 }, uPx: { value: 100 } },
+  vertexShader: `
+    attribute float aPh; uniform float uTime; uniform float uPx; varying float vA;
+    void main(){
+      vec3 p = position;
+      p.x += sin(uTime*.35 + aPh*1.7)*.5 + sin(uTime*.9 + aPh)*.1;
+      p.y += sin(uTime*.45 + aPh*2.3)*.35;
+      p.z += cos(uTime*.3 + aPh*1.3)*.5;
+      float b = pow(max(0., sin(uTime*(.8 + fract(aPh)*.8) + aPh*6.)), 3.);
+      vA = .12 + .88*b;
+      vec4 mv = modelViewMatrix * vec4(p, 1.);
+      gl_PointSize = uPx * (.55 + .9*b) / -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    varying float vA;
+    void main(){
+      float d = length(gl_PointCoord - .5) * 2.;
+      if (d > 1.) discard;
+      float core = smoothstep(.35, .0, d);
+      float halo = pow(1. - d, 2.5);
+      vec3 col = mix(vec3(1., .72, .2), vec3(1., .98, .75), core);
+      gl_FragColor = vec4(col, (halo*.7 + core*.5) * vA);
+    }`
+});
+const fireflies = new THREE.Points(ffGeo, ffMat); fireflies.frustumCulled = false; fireflies.renderOrder = 4; scene.add(fireflies);
+
+/* ================= 메디 캐릭터 (단순 3D) ================= */
+const MM = {
+  white: mat(0xffffff, { roughness: .6 }), navy: mat(0x263b7a, { roughness: .6 }), green: mat(0x2e8b3d, { roughness: .6 }),
+  red: mat(0xe23d55, { roughness: .5 }), pink: mat(0xfbd3cf, { roughness: .8 }), black: mat(0x111111, { roughness: .4 })
+};
+function nameTag(text) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 96;
+  const x = c.getContext('2d'); x.fillStyle = 'rgba(255,255,255,.92)'; x.beginPath(); x.roundRect(40, 16, 176, 64, 32); x.fill();
+  x.fillStyle = '#263b7a'; x.font = 'bold 40px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(text, 128, 50);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false }));
+  s.scale.set(.6, .225, 1); s.position.y = 1.42; s.renderOrder = 10; return s;
+}
+function buildMedi() {
+  // g(위치) > rig(좌우 회전: 앞/뒤 방향 전환) > body, 발   / 이름표·링은 회전하지 않음
+  const g = new THREE.Group(), rig = new THREE.Group(), body = new THREE.Group(); g.add(rig); rig.add(body);
+  const S = (r, m, sx, sy, sz, x, y, z, parent = body) => {
+    const o = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), m); o.scale.set(sx, sy, sz); o.position.set(x, y, z); parent.add(o); return o;
+  };
+  const feetL = S(.13, MM.navy, 1, .8, 1.25, -.13, .1, 0, rig), feetR = S(.13, MM.navy, 1, .8, 1.25, .13, .1, 0, rig);
+  S(.3, MM.white, 1, .85, .85, 0, .4, 0);                       // 가운
+  S(.34, MM.white, 1, .92, .95, 0, .84, 0);                     // 머리
+  const hat = new THREE.Mesh(new THREE.SphereGeometry(.35, 24, 12, 0, Math.PI * 2, 0, Math.PI * .38), MM.navy);
+  hat.scale.set(1, .92, .95); hat.position.y = .84; body.add(hat);   // 남색 모자
+  [-1, 1].forEach((k) => {
+    S(.1, MM.green, .5, 1.1, .7, k * .36, .84, 0);              // 헤드셋
+    S(.1, MM.navy, 1, 1, 1, k * .31, .38, 0);                   // 장갑
+    S(.045, MM.black, 1, 1.3, .5, k * .1, .87, -.31);           // 눈 (얼굴은 -z, 트리 쪽)
+    S(.09, MM.pink, 1, 1, .35, k * .2, .77, -.27);              // 볼
+  });
+  S(.03, MM.red, 1, 1, 1, 0, .81, -.325);                       // 코
+  g.add(nameTag('메디'));
+  g.userData = { rig, body, feetL, feetR };
+  return g;
+}
+
+/* ================= 플레이어 ================= */
+const laneX = (lane) => (lane - (CONFIG.LANES - 1) / 2) * CONFIG.LANE_GAP;
+function makePlayer({ id, lane, z, self = false }) {
+  const mesh = buildMedi(); scene.add(mesh);
+  if (self) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(.3, .37, 32), new THREE.MeshBasicMaterial({ color: 0x2e8b3d }));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = .02; mesh.add(ring);
+  }
+  return { id, lane, x: laneX(lane), z, target: z, self, mesh, phase: Math.random() * 6, moving: false, face: 0, faceT: 0 };
+}
+const me = makePlayer({ id: 'me', lane: 4, z: CONFIG.START_Z, self: true }); // 서버 없이도 혼자 체험 가능
+const remotes = new Map();
+const countEl = document.getElementById('count');
+const updateCount = () => { countEl.textContent = '접속 중 ' + (remotes.size + 1) + '명'; };
+updateCount();
+
+const input = { kF: false, kB: false, bF: false, bB: false };
+function stepPlayer(p, dt, t) {
+  if (p.self) {
+    const dir = ((input.kB || input.bB) ? 1 : 0) - ((input.kF || input.bF) ? 1 : 0); // +1 뒤로(보는 사람 쪽), -1 앞으로(트리 쪽)
+    const nz = THREE.MathUtils.clamp(p.z + dir * CONFIG.SPEED * dt, CONFIG.STOP_Z, CONFIG.START_Z);
+    p.moving = dir !== 0 && nz !== p.z;
+    if (p.moving) { p.faceT = dir > 0 ? Math.PI : 0; p.z = nz; }
+  } else {
+    const d = p.target - p.z; p.moving = Math.abs(d) > .02;
+    if (p.moving) p.faceT = d > 0 ? Math.PI : 0;
+    p.z += d * Math.min(1, dt * 8);
+  }
+  p.face += (p.faceT - p.face) * Math.min(1, dt * 10); // 부드럽게 돌아서기
+  const s = p.moving ? Math.sin(t * 9 + p.phase) : 0, u = p.mesh.userData;
+  p.mesh.position.set(p.x, 0, p.z);
+  u.rig.rotation.y = p.face;
+  u.body.position.y = Math.abs(s) * .05; u.feetL.position.z = s * .07; u.feetR.position.z = -s * .07;
+}
+
+/* ================= 입력 ================= */
+const KEYS = { ArrowUp: 'kF', KeyW: 'kF', Space: 'kF', ArrowDown: 'kB', KeyS: 'kB' };
+addEventListener('keydown', (e) => { const k = KEYS[e.code]; if (k) { input[k] = true; e.preventDefault(); } });
+addEventListener('keyup', (e) => { const k = KEYS[e.code]; if (k) input[k] = false; });
+addEventListener('blur', () => { input.kF = input.kB = input.bF = input.bB = false; });
+
+const fwd = document.getElementById('fwd'), back = document.getElementById('back');
+function hold(el, key) {
+  const on = (e) => { input[key] = true; el.classList.add('on'); el.setPointerCapture?.(e.pointerId); e.preventDefault(); };
+  const off = () => { input[key] = false; el.classList.remove('on'); };
+  el.addEventListener('pointerdown', on);
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((n) => el.addEventListener(n, off));
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+hold(fwd, 'bF'); hold(back, 'bB');
+const FWD_HTML = '<span>▲</span>앞으로<br>걷기', ARRIVE_HTML = '<span>🎄</span>도착!';
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const overTree = (e) => { ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera); return ray.intersectObject(hit).length > 0; };
+function openInvite() { // 사용자 클릭 안에서 실행 → 팝업 차단을 피함
+  const a = document.createElement('a'); a.href = CONFIG.LINK; a.target = '_blank'; a.rel = 'noopener noreferrer';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+renderer.domElement.addEventListener('click', (e) => { if (overTree(e)) openInvite(); });
+renderer.domElement.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') document.body.classList.toggle('pointer', overTree(e)); });
+
+/* ================= 멀티플레이 (Firebase Realtime Database) ================= */
+const FB_BASE = 'https://www.gstatic.com/firebasejs/13.3.0/'; // app / auth / database 모두 같은 버전을 사용해야 함
+let sendZ = null; // 연결되면 위치 전송 함수가 들어감
+const addRemote = (id, v) => {
+  if (!remotes.has(id) && v && Number.isFinite(v.z) && Number.isInteger(v.lane)) remotes.set(id, makePlayer({ id, lane: v.lane, z: v.z }));
+  updateCount();
+};
+const removeRemote = (id) => { const p = remotes.get(id); if (p) { scene.remove(p.mesh); remotes.delete(id); } updateCount(); };
+async function connect() {
+  if (location.protocol === 'file:') return; // 파일로 직접 열면 혼자 체험 모드
+  if (Object.values(FIREBASE_CONFIG).some((v) => String(v).includes('YOUR_'))) {
+    console.warn('FIREBASE_CONFIG가 비어 있어 혼자 체험 모드로 실행합니다.'); return;
+  }
+  try {
+    const [{ initializeApp }, A, D] = await Promise.all([
+      import(FB_BASE + 'firebase-app.js'), import(FB_BASE + 'firebase-auth.js'), import(FB_BASE + 'firebase-database.js')
+    ]);
+    const app = initializeApp(FIREBASE_CONFIG);
+    const auth = A.getAuth(app);
+    await A.setPersistence(auth, A.browserSessionPersistence); // 탭마다 별도 접속자로 인식
+    const { user } = await A.signInAnonymously(auth);
+    const db = D.getDatabase(app);
+    const playersRef = D.ref(db, 'players'), meRef = D.ref(db, 'players/' + user.uid);
+
+    const lane = Math.floor(Math.random() * CONFIG.LANES); // 길은 무작위 배정 (겹쳐도 무방)
+    me.lane = lane; me.x = laneX(lane);
+
+    D.onChildAdded(playersRef, (s) => { if (s.key !== user.uid) addRemote(s.key, s.val()); });
+    D.onChildChanged(playersRef, (s) => {
+      const p = remotes.get(s.key), v = s.val();
+      if (s.key !== user.uid && p && v && Number.isFinite(v.z)) p.target = v.z;
+    });
+    D.onChildRemoved(playersRef, (s) => removeRemote(s.key));
+
+    // 연결될 때마다(재연결 포함) 접속 해제 시 삭제 예약 + 내 위치 등록
+    D.onValue(D.ref(db, '.info/connected'), (s) => {
+      if (s.val() !== true) { sendZ = null; return; }
+      D.onDisconnect(meRef).remove()
+        .then(() => D.set(meRef, { lane, z: me.z }))
+        .then(() => { sendZ = (z) => D.set(D.ref(db, 'players/' + user.uid + '/z'), z); lastSent = me.z; })
+        .catch((e) => console.warn('Firebase 등록 실패', e));
+    });
+  } catch (e) {
+    console.warn('Firebase 연결 실패, 혼자 체험 모드로 실행합니다.', e);
+  }
+}
+connect();
+
+/* ================= 카메라·루프 ================= */
+function resize() {
+  const a = innerWidth / innerHeight;
+  renderer.setSize(innerWidth, innerHeight); camera.aspect = a; camera.fov = a < 1 ? 70 : 52; camera.updateProjectionMatrix();
+  ffMat.uniforms.uPx.value = renderer.getPixelRatio() * innerHeight * .11; // 반딧불 크기를 화면 크기에 맞춤
+}
+addEventListener('resize', resize); resize();
+
+const camTarget = new THREE.Vector3();
+function updateCamera(dt, snap = false) { // 카메라는 항상 트리 쪽을 바라봄 (뒤로 걸어도 동일)
+  const portrait = innerWidth / innerHeight < 1;
+  camTarget.set(me.x * .5, portrait ? 2.9 : 2.4, me.z + (portrait ? 5.5 : 4.2));
+  if (snap) camera.position.copy(camTarget); else camera.position.lerp(camTarget, 1 - Math.exp(-4 * dt));
+  camera.lookAt(portrait ? .4 : 1.0, 2.3, 0); // 가로 화면: 트리는 왼쪽, TV는 오른쪽
+}
+updateCamera(0, true);
+
+const clock = new THREE.Clock();
+let sendT = 0, lastSent = me.z, arrived = false;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), .1), t = clock.elapsedTime;
+  stepPlayer(me, dt, t); remotes.forEach((p) => stepPlayer(p, dt, t));
+
+  twinkle[0].opacity = .65 + .35 * Math.sin(t * 2.1);
+  twinkle[1].opacity = .65 + .35 * Math.sin(t * 2.1 + Math.PI);
+  if (starMesh) { starMesh.rotation.y = Math.sin(t * .8) * .3; starHalo.material.opacity = .24 + .06 * Math.sin(t * 2.4); }
+  ffMat.uniforms.uTime.value = t;
+
+  updateCamera(dt);
+
+  sendT += dt;
+  if (sendZ && sendT > .1 && me.z !== lastSent) { sendZ(me.z); lastSent = me.z; sendT = 0; }
+  const atStop = me.z <= CONFIG.STOP_Z + .01;
+  if (atStop !== arrived) { arrived = atStop; fwd.innerHTML = arrived ? ARRIVE_HTML : FWD_HTML; }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
